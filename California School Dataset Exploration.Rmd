@@ -5,7 +5,10 @@ knit: (function(input_file, encoding) {
   rmarkdown::render(input_file,
     encoding=encoding,
     output_file=file.path(dirname(input_file), out_dir, 'index.html'))})
-output: html_document
+output:
+  html_document:
+    includes:
+      in_header: googleanalytics.html
 ---
 
 ```{r setup, include=FALSE}
@@ -182,6 +185,7 @@ The observation with the lowest residual within the *model_slr* occurred at dist
 ```{r plotting model slr}
 plot(model_slr, which=1)
 ```
+
 This might happen because at some school district, *mealpct* might not be representative of the actual income condition of the student studying there. There might be higher or lower than it supposed to be percentage of student that is eligible for the free or reduced price lunch.
 
 ### Single Linear Regression Equation
