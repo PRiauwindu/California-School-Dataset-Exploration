@@ -1,0 +1,493 @@
+---
+title: "California School Dataset Exploration"
+knit: (function(input_file, encoding) {
+  out_dir <- 'docs';
+  rmarkdown::render(input_file,
+    encoding=encoding,
+    output_file=file.path(dirname(input_file), out_dir, 'index.html'))})
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Before delving into the California School dataset in `Ecdat` library, below relevant libraries need to be imported first:
+
+```{r Importing Relevant Libraries, warning=FALSE, comment=FALSE, message=FALSE}
+library(tidyverse)
+library(Ecdat)
+library(forecast)
+library(reshape2)
+library(MASS)
+library(visualize)
+```
+
+## Simple Linear Regression
+
+```{r Importing Caschool Dataset}
+data <- Caschool
+```
+
+To explore the dataset, `str()` function was used in code below:
+
+```{r Exploring the Dataset}
+str(data)
+```
+After looking at the dataset structure and comparing it with the dataset description, i believe the variable classification should be as follow:
+
+**1. Numeric**: *enrltot*, *teachers*, *calwpct*, *mealpct*, *computer*, *testscr*, *compstu*, *expnstu*, *str*, *avginc*, *elpct*, *readscr*, and *matchscr*.
+
+**2. Categorical**: *distcod*, *county*, *district*, and *grspan*.
+
+### Filtering the dataset to only contain rows from the top 16 county
+
+```{r Filtering Dataset to Top 16 Counties}
+# Creating list of 16 most common counties
+top_county <- data %>%
+  count(county, sort=TRUE)
+top_county <- top_county[1:16,1]
+
+# Filtering dataset to only include properties of 16 most common counties
+data_filtered <- data %>%
+  filter(county %in% top_county)
+
+# Checking whether the filtered dataset has only contained variables from only 16 most common counties
+unique(data_filtered$county)
+```
+Top 16 counties in the dataset are: Sonoma, Kern, Los Angeles, Tulare, San Diego, Santa Clara, Humboldt, San Mateo, Shasta, Fresno, Merced, Orange, Placer, Santa Barbara, El Dorado, and San Bernardino.
+
+The dataset has been filtered to only include data from those counties as *data_filtered*
+
+### Partitioning the filtered dataset
+
+```{r Partitioning the Dataset}
+# Setting seed for reproducibility
+set.seed(250)
+
+# Random sampling the dataset index without replacement with 60% for training set
+train_index <- sample(c(1:nrow(data_filtered)), nrow(data_filtered)*0.6) 
+
+# Partition the dataset into training and validation set based on the index sampling
+train_df <- data_filtered[train_index, ]
+valid_df <- data_filtered[-train_index, ]
+
+# Resetting the index for both train_df and valid_df for ease of subsetting
+rownames(train_df) <- NULL
+rownames(valid_df) <- NULL
+
+# Ensuring the partitioned dataset has been properly set
+paste("number of rows for original dataset:", nrow(data_filtered))
+paste("number of rows for training set:", nrow(train_df))
+paste("number of rows for validation set:", nrow(valid_df))
+
+```
+Partitioning the dataset is essential because it helps prevent overfitting, evaluate model performance, provide an unbiased sample, and support reproducibility. Overfitting occurs when a model is trained to fit the noise/random effect in the data rather than the underlying patterns or the real effect. Partitioning the data helps prevent this by allowing us to train the model on one subset of the data and validate it on another. Partitioning the data also ensures that the model is tested on data that it has not seen during training to ensure that it is generalizing well. Moreover, if we do not partition the data and use the entire dataset for analysis, we risk introducing biases into our results. Partitioning the data provides an unbiased sample to work with, ensuring the results are valid and reliable.
+
+### Exploring the relationship between *readscr* and *mealpct* on a scatterplot
+
+```{r Scatterplot readscr and mealpct, fig.align='center',message=FALSE}
+ggplot(train_df, mapping=aes(x=mealpct, y=readscr))+
+  geom_point(color='steelblue', size=3)+
+  geom_smooth(method = "lm", se = FALSE, color='yellow2')+
+  theme_light()+
+  ggtitle("Scatterplot of Avg Reading Score vs % Reduced/Free Lunch Student") +
+  xlab("mealpct") + 
+  ylab("readscr")
+
+paste("Correlation between readscr and mealpct:", round(cor(train_df$readscr, train_df$mealpct),3))
+```
+
+The scatterplot between *readscr* and *mealpct* above indicates that the two variables display negative linear relationship meaning that as the percentage of students on free and reduced lunch increases, the average reading score tends to decrease. The trend line overlay-ed on top of the points further emphasize the relationship between the two variables and represent the overall trend in the data.
+
+Frankly speaking, intuitively i would have expected the opposite of this result since i once read a health article discussing about student who are having lunch may actually increase their overall score. I even try to calculate the correlation value and found the same result with the above plot.
+
+But after i did some googling, it gradually make sense to me in a way that *mealpct* might be used as proxy for the poverty. The higher the number of student eligible for free/reduced price for lunch might translate to the higher aggregate of family with poverty in that school/district. I need to do more research on this but my hypothesis is that the lower income family students might not have the same privileges as their higher income family peers thus resulting in lower avg reading score but again correlation does not imply causation so it is only my hunch and i need to do more research.
+
+### Calculating correlation value between *readscr* and *mealpct*
+
+```{r Correlation between readscr and mealpct}
+# Calculating correlation value
+paste("Correlation between readscr and mealpct:", round(cor(x = train_df$readscr, y = train_df$mealpct, use = "everything", method = c("pearson", "kendall", "spearman")),3))
+
+# Checking the correlation significance
+cor.test(x=train_df$readscr, y=train_df$mealpct,
+         alternative = c("two.sided", "less", "greater"),
+         method = c("pearson", "kendall", "spearman"),
+         exact = NULL, conf.level = 0.95, continuity = FALSE)
+
+```
+The correlation between *readscr* and *mealpct* is calculated to be at **-0.897** indicating a strong negative relationship between those two variables. 
+
+The correlation is also **significant at alpha level of 0.05** indicated by the p-value of less than 0.05. This imply that we can safely **reject the null hypothesis** that the true correlation is equal to zero.
+
+### Developing Simple Linear Regression (SLR) between *readscr* and *mealpct*
+
+```{r SLR between readscr and mealpct}
+model_slr <- lm(readscr~mealpct, data=train_df)
+summary(model_slr)
+```
+
+### Finding the observation on the model that generated the highest residuals and compare it with the actual district average reading score
+
+```{r indexing residual}
+# Checking which observation with the highest residual
+unname(which.max(model_slr$residuals))
+
+# Checking the model residual for that particular observation
+unname(model_slr$residuals[which.max(model_slr$residuals)]) %>% round(2)
+```
+The index of the observation with the highest residual is 73, this index will then be used to check for the row with that specific observation.
+
+```{r highest residual}
+# Checking for the observation with the highest residual average reading score
+paste("The average reading score for the data with the highest residual in the model_slr:", round(train_df[73,"readscr"], 2))
+
+# Checking for the fitted value for that particular observation
+paste("Fitted value for observation with highest residual:",round(unname(model_slr$fitted.values[73]),2))
+
+# Calculating the residuals for that particular observation
+highest_res <- (train_df[73,"readscr"]) - (model_slr$fitted.values[73])
+paste("The highest residual in the model_slr is:", round(unname(highest_res),2))
+```
+The observation with the highest residual within the *model_slr* occurred at district Ballico - Cressey Elementary, Merced county. The above code returns the district's average reading score to be around **661,1** with the model fitted value at **640,85**. The residual could be calculated by subtracting the district`s average reading score with the fitted value resulting in the residual of **20.25** that matches the residual calculated in the residual summary of the model.
+
+### Finding the observation on the model that generated the lowest residuals and compare it with the actual district average reading score
+
+```{r indexing lowest residual}
+# Checking which observation with the lowest residual
+unname(which.min(model_slr$residuals))
+
+# Checking the model residual for that particular observation
+unname(model_slr$residuals[which.min(model_slr$residuals)]) %>% round(2)
+```
+The index of the observation with the lowest residual is 41, this index will then be used to check for the row with that specific observation.
+
+```{r lowest residual}
+# Checking for the observation with the lowest residual average reading score
+paste("The average reading score for the data with the lowest residual in the model_slr:", round(train_df[41,"readscr"], 2))
+
+# Checking for the fitted value for that particular observation
+paste("Fitted value for observation with highest residual:",round(unname(model_slr$fitted.values[41]),2))
+
+# Calculating the residuals for that particular observation
+lowest_res <- (train_df[41,"readscr"]) - (model_slr$fitted.values[41])
+paste("The lowest residual in the model_slr is:", round(unname(lowest_res),2))
+```
+
+The observation with the lowest residual within the *model_slr* occurred at district Montgomery Elementary, Sonoma county. The above code returns the district's average reading score to be around **656,1** with the model fitted value at **683.54**. The residual could be calculated by subtracting the district`s average reading score with the fitted value resulting in the residual of **-27.44** that matches the residual calculated in the residual summary of the model.
+
+*mealpct* may not perfectly predict the average reading score *readscr* as shown by the model residuals where some of the values exhibited very high (positive) residuals and very low (negative) residuals as shown below:
+
+```{r plotting model slr}
+plot(model_slr, which=1)
+```
+This might happen because at some school district, *mealpct* might not be representative of the actual income condition of the student studying there. There might be higher or lower than it supposed to be percentage of student that is eligible for the free or reduced price lunch.
+
+### Single Linear Regression Equation
+
+Based on the summary of *model_slr*, the regression equation would be (rounded up to only two decimal values): 
+
+> readscr = 683.54 - 0.64*mealpct + error term
+
+The error term represents the difference between the predicted value of the dependent variable and the actual value of the dependent variable.
+
+The equation model above describe that for every one unit increase in *mealpct* variable value (in this case is the percentage/1%), the *readscr* variable would be decreasing by 0.64 points given the other variable constant (which is irrelevant for this single linear regression case since it only involve one variable).
+
+By using the above linear regression equation, i would plug the first row in my train_df$mealpct observation as the input and describe the meaning of the output. Below code was used to predict the output of a single input using *model_slr*:
+
+```{r predicting using sls}
+# Assigning sample point for prediction
+sample_point <- train_df$mealpct[1]
+paste("Sample point:", sample_point %>% round(2))
+
+# Checking the sample point actual average reading score
+paste("Sample point actual average reading score:", train_df$readscr[1] %>% round(2))
+
+# Checking the sample point residual in the model_slr
+paste("Sample point residual/error term:", unname(model_slr$residuals[1]) %>% round(2))
+
+# Plugging sample point into regression equation to get the predicted output
+new_value_pred <- predict(model_slr, data.frame(mealpct = sample_point))
+paste("Prediction of the average reading score:", new_value_pred %>% round(2))
+```
+Plugging the value of percentage of student getting free/reduced meal (mealpct) of 19.83 into the regression equation of readscr = 683.54 - 0.64*mealpct + ɛ returned the predicted value of average reading score of 670.76.
+
+Mathematically it could be written as readscr = 683.54 - 0.64*19.83 - 0.96, which return 669.88 (done in calculator) which is quite close with the output from predict function above and the difference might be caused by rounding error.
+
+### Assessing the accuracy of the *model_slr*, using `accuracy()` function from `forecast` library
+
+```{r assessing model accuracy}
+# Calculating the accuracy of the prediction made on the training dataset
+train_predicted <- predict(model_slr, train_df)
+accuracy_train_predicted <- data.frame(accuracy(train_predicted, train_df$readscr))
+accuracy_train_predicted
+
+# Calculating the accuracy of the prediction made on the validation dataset
+valid_predicted <- predict(model_slr, valid_df)
+accuracy_valid_predicted <- data.frame(accuracy(valid_predicted, valid_df$readscr))
+accuracy_valid_predicted
+
+# Combining accuracy output from training and validation dataset for better view and comparison
+model_accuracy <- rbind(accuracy_train_predicted, accuracy_valid_predicted)
+rownames(model_accuracy) <- c("Training Dataset", "Validation Dataset")
+model_accuracy
+```
+
+To evaluate how well a predictive model is performing on new data, it is crucial to assess the model's accuracy on both the training set and the validation set and this could be done by comparing the error measure. From the output of the above code we could specifically compare the RMSE and MAE of both the accuracy from the prediction made on training and validation dataset. Both of the RMSE and MAE are higher when the model is used to predict the output based on the validation dataset compared to when it is used to predict the output based on the training dataset or in other words, the model perform better in predicting the result in the training dataset compared to the validation dataset.
+
+The output above emphasize that when the model is used for a completely new dataset/points, the error measure might probably increase (or in some case could even decrease). This is happen because the model was trained using the training dataset and might somehow fit the "random effect" or noise specifically found within the training dataset and not the "random effect" or noise found in the new dataset. 
+
+## Comparing average reading score training dataset model RSME with the training dataset standard deviation.
+
+```{r model comparison}
+# Calculating readscr training dataset standard deviation
+paste("Standard deviation of readscr on training dataset:", sd(train_df$readscr)%>%round(2))
+
+# RMSE of prediction made by the model on training dataset
+paste("RMSE of model prediction on training dataset:", accuracy_train_predicted$RMSE %>% round(2))
+```
+Comparing the model's RMSE to the standard deviation (SD) of the reading scores in the training set is a useful way to assess the model's performance. If the RMSE is higher than the SD of the training set, it suggests that the model is not able to capture all the variability in the data and is making larger errors in prediction. This indicates that the model is underfitting the data and is not complex enough to capture the relationship between the predictors and the response variable. On the other hand, if the RMSE is lower than the SD of the training set, it suggests that the model is able to capture most of the variability in the data and is making relatively smaller errors in prediction. This indicates that the model is a good fit for the data and is not overfitting.
+
+However, it is important to keep in mind that the SD of the training set represents the variability of the actual values in the training set, whereas the RMSE represents the average error of the predicted values compared to the actual values. Therefore, the two values are not directly comparable, and it is important to consider other metrics, such as the R-squared value and the residuals plot, when evaluating the model's performance. While a lower RMSE than the SD of the training set is generally desirable, it is important to strike a balance between model complexity and accuracy. Overfitting the model by increasing its complexity can lead to a lower RMSE on the training set, but this may result in poorer performance on new data. Therefore, it is crucial to use a validation set to test the model's performance on new data and select a model that strikes a good balance between complexity and accuracy.
+
+In this case, the RMSE is actually lower than the standard deviation which means that the model is performing well and could safely be said that it didn`t exhibit any overfitting indication.
+
+## Multiple Linear Regression
+
+### Removing some variables within the dataset
+
+Two other outcome variables (*mathscr* and *testscr*) will be removed so that the dataset only contains one outcome variable which is the *readscr*
+
+```{r mlr 1}
+# Removing mathscr and testscr from training dataset
+train_df_update <- train_df %>%
+  dplyr::select(-testscr, -mathscr)
+
+# Removing mathscr and testscr from validation dataset
+valid_df_update <- valid_df %>%
+  dplyr::select(-testscr, -mathscr)
+```
+
+I have identified two variables with as many, or nearly as many, unique values as there are records in the dataset which are *distcod* (162 unique values) and *district* (160 unique values). These two values can be safely discarded from the updated training and validation dataset.
+
+```{r mlr 2}
+# Removing distcod and district from training dataset
+train_df_update <- train_df_update %>%
+  dplyr::select(-distcod, -district)
+
+# Removing distcod and district from validation dataset
+valid_df_update <- valid_df_update %>%
+  dplyr::select(-distcod, -district)
+```
+
+### Building correlation table 
+
+for numerical predictor variables in the training dataset and removing variable with strong correlation.
+
+```{r mlr 3}
+# Creating new dataframe for numerical variable correlation checking
+numeric_variable <- train_df_update %>%
+  dplyr::select(enrltot, teachers, calwpct, mealpct, computer, compstu, expnstu, str, avginc, elpct)
+
+# Building correlation table for numeric variable
+corr<-cor(numeric_variable)
+corr
+
+# Plot a heat map of the correlation matrix to visualize the correlation
+ggplot(data = reshape2::melt(corr)) +
+  geom_tile(aes(x = Var1, y = Var2, fill = value)) +
+  scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0)
+
+# Filtering the correlation table to only include correlation with 0.8 or higher
+corr[abs(corr) <= 0.8] <- NA
+corr_table <- as.data.frame.table(corr)
+corr_table <- na.omit(corr_table)
+corr_table %>% arrange(Freq)
+```
+
+Above result showed that there are three pairs of variable within the *train_df_update* that have correlation of 0.8 or higher (proxy to multicollinearity issue) which are:
+
+1. *computer* and *enrltot*\
+2. *computer* and *teachers*\
+3. *teachers* and *enrltot*
+
+After consulting the dataset description, i decided to remove the *enrltot* or the total enrollment variables to remove two out of three pair of highly correlated variable (e.g.*computer* and *enrltot* & *teachers* and *enrltot*). 
+I believe that the dataset already had another variable to proxy the two pairs:
+
+1. Variable *compstu* which is the number of computer per student, could proxy the information provided by the pair of *computer* and *enrltot* variables.
+
+2. Variable *str* which is the ratio between student and teacher could proxy the information provided by the pair of *teachers* and *enrltot*
+
+The other variable that i also decided to remove was the *computer* (number of computer) variable. This variable could be proxied by the combination of *compstu*, *str*, and *teachers* variable. Actually the same approach could also be applied to *teachers* instead of *computer* for the same logic but i decided to keep the *teachers* variable intact because it is more intuitive for me.
+
+Below code was used to remove the *enrltot* and *computer* variable from the training dataset:
+
+```{r mlr 4}
+train_df_update <- train_df_update %>%
+  dplyr::select(-enrltot, -computer)
+valid_df_update <- valid_df_update %>%
+  dplyr::select(-enrltot, -computer)
+```
+
+### Building a model with only a categorical input. 
+
+Picking *Los Angeles* County. For this purpose i will use the updated training dataset (same observations with training dataset but with less columns).
+
+```{r mlr 5}
+# b. Finding the mean of average reading score in Los Angeles county
+mean_readscr_LA <- train_df_update %>%
+  dplyr::group_by(county)%>%
+  dplyr::summarize(avgmean_readscr = mean(readscr) %>% round(2)) %>%
+  dplyr::filter(county=="Los Angeles")
+mean_readscr_LA
+```
+
+```{r mlr 6}
+# c. Building SLR with readscr as the outcome and county as the predictor
+county_readscr_model <- lm(readscr~county, data=train_df_update)
+summary(county_readscr_model)
+```
+
+```{r mlr 7}
+# d. Checking the predicted value of readscr for LA county
+LA_readscr_predict <- predict(county_readscr_model, data.frame(county="Los Angeles"))
+paste("Predicted average reading score for LA:", LA_readscr_predict %>% round(2))
+```
+
+The mean of the *readscr* variable within the training dataset for LA county and the predicted value of *readscr* for LA county by using the SLR model returned the same value which is **643.9**. This is kinda make sense since no other numerical variables involved as the predictor in the model. Categorical variables will be represented as binary number (0 or 1) in the SLR model if we dummified each of the categorical variable. This will result in the prediction returning the mean value of the outcome variable from the training dataset.
+
+Even in this case i did not dummify the county categorical variable, R did it internally by using contrast() function. In this model, the baseline variable is the **El Dorado** County. The predicted value for each county is calculated by summing the intercept with the county coefficient. in LA case the predicted value if calculated manually (using calculator) would be **669.24 - 25.34 = 643.9**
+
+### Performing Backward Elimination Regression
+
+In order to build a backward elimination regression, i will use AIC parameter to determine which combination of predictors returned the best AIC. For this purpose, i will use `MASS` package `stepAIC()` function.
+
+```{r mlr 8}
+# Fitting MLR with all of the predictor variable in the updated training dataset
+full_model_mlr <- lm(readscr~., data = train_df_update)
+
+# Performing Backward Elimination Stepwise Regression
+step_model <- stepAIC(full_model_mlr, direction = "backward")
+
+# Checking the summary of the Backward Elimination Stepwise Regression
+summary(step_model)
+```
+Above result showed that the initial AIC with full model predictors **county + grspan + teachers + calwpct + mealpct + compstu + expnstu + str + avginc + elpct** is calculated to be around 684.76. After performing stepwise regression backward elimination, the combination of predictors with the lowest AIC at 673.39 is **mealpct + expnstu + str + avginc + elpct**
+
+## Calculating model metrics of SST and SSR
+
+```{r mlr 9}
+# a. Calculating SST
+train_df_update$outcome_diff <- train_df_update$readscr - mean(train_df_update$readscr)
+train_df_update$squared_diff <- train_df_update$outcome_diff^2
+paste("SST model metrics:", sum(train_df_update$squared_diff) %>% round(2))
+
+# b. Calculating SSR
+train_df_update$explained <- step_model$fitted.values - mean(train_df_update$readscr)
+train_df_update$squared_explained <- train_df_update$explained^2
+paste("SSR model metrics:",sum(train_df_update$squared_explained) %>% round(2))
+
+# c. Calculating SSR/SST
+ssr_sst <- sum(train_df_update$squared_explained)/sum(train_df_update$squared_diff)
+paste("SSR/SST model metrics:", ssr_sst %>% round(4))
+```
+SSR/SST value could also be found in the **Multiple R-squared** section within the *step_model* summary and the value is the same for both of the metrics (0.8495).
+
+### Getting p-value from a t-value
+
+Getting to a t-value to a p-value. For this question i would pick *expnstu* variable. The associated t-value for that variable is 2.035. Below code was used to visualize the t-distribution with value of 2.035 and degree of freedom of 156.
+
+```{r mlr 10}
+# Visualizing the t-distribution
+visualize.t(stat = 2.035, df=156)
+```
+The above graph showed that approximately 97.8% area under the curve is shaded. The p-value for *expnstu* from the model was 0.043576 ~ 0.044. This can be calculated using this formula:
+
+> p-value = 2 * pt(abs(t value), residual df, lower.tail = FALSE)
+
+Below code was used to calculate p-value from the t-value
+
+```{r mlr 11}
+# Calculating p-value from t-value
+p_value <- 2*pt(abs(2.035), 156 , lower.tail = FALSE)
+paste("p-value of the expnstu variable:", p_value %>% round(3)) 
+```
+Or this value could also be derived from previous t-distribution graph by subtracting 1 with the percentage of the shaded area and then multiply the number by 2. This calculation was done manually using calculator: p-value = (1-0.978) * 2 = 0.44.
+
+### Calculating model F-Statistics
+
+The F-statistics value for my model is 176.2 on 5 and 156 degree of freedom. The F-statistic measures the ratio of between-group variability to within-group variability, where the former measures differences between group means and the latter measures variation within each group. If the calculated F-value is greater than the critical F-value, the null hypothesis is rejected, indicating a significant difference between group means. If the calculated F-value is not greater than the critical F-value, the null hypothesis is failed to be rejected, indicating there is not enough evidence to suggest a significant difference between group means.
+
+Below code was used to calculate the F-statistics value step by step for the regression model:
+
+```{r mlr 12}
+# Calculating SST of the model. This has been done previously
+SST <- sum(train_df_update$squared_diff)
+
+# Calculating SSR of the model. This has been done previously
+SSR <- sum(train_df_update$squared_explained)
+
+# Calculating SSE of the model  
+SSE <- sum(step_model$residuals^2)
+
+# calculate the degrees of freedom for regression
+dfr <- length(step_model$coefficients) - 1
+
+# calculate the degrees of freedom for residuals
+dfe <- length(step_model$residuals) - length(step_model$coefficients)
+
+# calculate mean square for the regression model
+MSR <- SSR / dfr
+
+# calculate the mean square for residuals
+MSE <- SSE / dfe
+
+# calculate the F-statistic
+F_stats <- MSR / MSE
+paste("F-statistics value from the model:",F_stats %>% round(1))
+```
+The manually calculated value of F-statistics above matches the value from the regression model summary at **176.2** on 5 and 156 Degree of Freedom.
+
+### Predicting fictional data set using the model
+
+Predicting fictional school district average reading score with fictitious attributes. Below code was used to achieve this objective:
+
+```{r mlr 13}
+# Predicting the fictional school average reading score
+readscr_predict_fictional <- predict(step_model, data.frame(mealpct = 57.5, expnstu = 5500.5, str=19.2, avginc=11.3, elpct=2.3))
+paste("Fictional school average reading score:", readscr_predict_fictional %>% round(2))
+```
+The model predicted that the fictional school with attributes mealpct = 57.5, expnstu = 5500.5, str=19.2, avginc=11.3, elpct=2.3 will have average reading score test around 650.59.
+
+### Assessing the accuracy of the *step_model*, using `accuracy()` function from `forecast` library
+
+```{r mlr 14}
+# Calculating the accuracy of the prediction made on the training dataset
+train_pred_mlr <- predict(step_model, train_df_update)
+acc_train_pred_mlr <- data.frame(accuracy(train_pred_mlr, train_df_update$readscr))
+acc_train_pred_mlr
+
+# Calculating the accuracy of the prediction made on the validation dataset
+val_pred_mlr <- predict(step_model, valid_df_update)
+acc_val_pred_mlr <- data.frame(accuracy(val_pred_mlr, valid_df_update$readscr))
+acc_val_pred_mlr
+
+# Combining accuracy output from training and validation dataset for better view and comparison
+model_accuracy_mlr <- rbind(acc_train_pred_mlr, acc_val_pred_mlr)
+rownames(model_accuracy_mlr) <- c("Training Dataset", "Validation Dataset")
+model_accuracy_mlr
+```
+Output above showed that both of the RMSE and MAE are higher when the model is used to predict the output based on the validation dataset compared to when it is used to predict the output based on the training dataset or in other words, the model perform better in predicting the result in the training dataset compared to the validation dataset. The same trend with the previous SLR model.
+
+Now to compare the SLR and MLR performance, i am combining the error measure of both SLR and MLR on both of the Training and Validation dataset:
+
+```{r mlr 15}
+model_accuracy_all <- rbind(acc_train_pred_mlr, accuracy_train_predicted, acc_val_pred_mlr, accuracy_valid_predicted)
+rownames(model_accuracy_all) <- c("Training Dataset MLR", "Training Dataset SLR", "Validation Dataset MLR", "Validation Dataset SLR")
+model_accuracy_all
+```
+
+Fundamentally, the more parameter/variable we introduce to the model, the more risk we would get in terms of overfitting. Based on that knowledge, Multiple Linear Regression inherent more overfitting risk compared to the Single Linear Regression due to the fact the MLR uses more variables than the SLR. But since the number of observation in both the SLR and MLR are the same and quite big (162) observation, i believe that the risk of overfitting would be relatively low.
+
+In terms of performance measured by the error measure/accuracy, RMSE and MAE specifically, MLR performs slightly better than the SLR indicated by the lower RMSE and MAE shown in the table.
