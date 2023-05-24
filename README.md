@@ -1,5 +1,6 @@
-# California-School-Dataset-Exploration
+# California School Dataset Exploration
 
+GitHub Pages: https://priauwindu.github.io/California-School-Dataset-Exploration/
 
 # Introduction
 
