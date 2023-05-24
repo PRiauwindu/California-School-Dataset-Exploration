@@ -21,3 +21,9 @@ In contrast, the model also found that several factors were negatively associate
 Overall, our multiple linear regression model provides useful insights into the factors that influence student achievement in California public schools. By identifying these factors, policymakers and educators can work to address these issues and potentially improve student outcomes.
 
 It is important to note that while the multiple linear regression analysis of the "caschool" dataset using the predictors of mealpct, expnstu, str, avginc, and elpct did reveal some significant associations with student test scores in California public schools, the model is limited by the available variables, range of the data value within the dataset, and potential confounding factors that were not included in our analysis. Furthermore, correlations do not necessarily imply causation, and it is important to consider other factors that may influence student achievement, such as student motivation and teacher quality. Therefore, our results should be interpreted with caution and further research is needed to fully understand the complex factors that impact student achievement in California public schools.
+
+If you find this repository useful, you may replicate the code here to assist your projects/works but dont forget to properly cite this repository in your work.
+
+Thank you!
+
+Putranegara Riauwindu
